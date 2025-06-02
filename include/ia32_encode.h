@@ -86,6 +86,7 @@
  * Function: build_mov_register_to_register
  *
  * Description:
+ *    builds an 8/16/32/64-bit register to register mov instruction
  *
  * Inputs: 
  *    short mov_size               :  size of the move being requested
@@ -133,6 +134,8 @@ static inline volatile char *build_mov_register_to_register(short mov_size, int 
  * Function: build_mov_imm_to_register
  *
  * Description:
+ *    builds an 8/16/32/64-bit immediate to register mov instruction. does not range check immediate
+ *    but explicitly truncates.
  *
  * Inputs: 
  *    short mov_size               :  size of the move being requested
@@ -190,6 +193,7 @@ static inline volatile char *build_imm_to_register(short mov_size, long imm, int
  * Function: build_reg_to_memory
  *
  * Description:
+ *    builds an 8/16/32/64-bit register to memory mov instruction with 0/8/32 bit offset.
  *
  * Inputs: 
  *    short mov_size               :  size of the move being requested
@@ -251,6 +255,78 @@ static inline volatile char *build_reg_to_memory(short mov_size, int src_reg, in
       
     default:
       fprintf(stderr,"ERROR: Invalid displacement (%d) passed to register to memory move\n", disp_type);
+      exit(-3);
+  }
+  
+  return(tgt_addr);
+}
+
+
+/*
+ * Function: build_mov_memory_to_register
+ *
+ * Description:
+ *    builds an 8/16/32/64-bit memory to register mov instruction with 0/8/32 bit offset.
+ *
+ * Inputs: 
+ *    short mov_size               :  size of the move being requested
+ *    int   src_reg                :  register source encoding 
+ *    int   dest_reg               :  destination reg of move
+ *    unsigned char disp_type      :  0/8/32-bit displacement type
+ *    int   disp                   :  displacement value
+ *    volatile char *tgt_addr      :  starting memory address of where to store instruction
+ *
+ * Output: 
+ *    returns adjusted address after encoding instruction
+ */
+static inline volatile char *build_mov_memory_to_register(short mov_size, int src_reg, int dest_reg, unsigned char disp_type, int disp, volatile char *tgt_addr)
+{
+  switch(mov_size)  
+  {
+    case ISZ_1: 
+      (*(short *) tgt_addr) = (disp_type + (dest_reg << REG_SHIFT) + src_reg) << 8 | 0x8a;
+      tgt_addr += BYTE2_OFF;
+      break;
+
+    case ISZ_2:
+      (*tgt_addr ++) = PREFIX_16BIT;
+      // FALL THROUGH
+      
+    case ISZ_4:
+      (*(short *) tgt_addr) = (disp_type + (dest_reg << REG_SHIFT) + src_reg) << 8 | 0x8b;
+      tgt_addr += BYTE2_OFF;
+      break;
+      
+    case ISZ_8:
+      (*(char *) tgt_addr) = (REX_PREFIX | REX_W);
+      tgt_addr += BYTE1_OFF;
+      (*(short *) tgt_addr) = (disp_type + (dest_reg << REG_SHIFT) + src_reg) << 8 | 0x8b;
+      tgt_addr += BYTE2_OFF;
+      break;
+    
+    default:
+      fprintf(stderr,"ERROR: Incorrect size (%d) passed to memory to register move\n", mov_size);
+      exit(-1);
+  }
+  
+  switch(disp_type)
+  {
+    case DISP0_MODRM:
+      // no displacement
+      break;
+      
+    case DISP8_MODRM:
+      (*(char *) tgt_addr) = (char)disp;
+      tgt_addr += BYTE1_OFF;
+      break;
+      
+    case DISP32_MODRM:
+      (*(int *) tgt_addr) = (int)disp;
+      tgt_addr += BYTE4_OFF;
+      break;
+      
+    default:
+      fprintf(stderr,"ERROR: Invalid displacement (%d) passed to memory to register move\n", disp_type);
       exit(-3);
   }
   

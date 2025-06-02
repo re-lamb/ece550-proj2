@@ -1,13 +1,21 @@
-//
-// simple encoding example fr IA-32 validation project
-//
-// project_part2
-// 
+/*
+ * ECE550 Spring 2025 Project part 2
+ * R.E. Lamb, Harsha Duvvuru
+ *
+ * usage: encodeit [-h] [-s seed] [-n insts]
+ *
+ * args:
+ *      -h          print usage message
+ *      -s seed     set random seed
+ *      -n insts    set number to generate
+ *
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "ia32_encode.h"
 
@@ -27,15 +35,17 @@
 // typedefs
 typedef int (*funct_t)();
 
-// globals to aid debug to start
+// globals
+funct_t start_test;
 volatile char *mptr = 0, *next_ptr = 0, *mdptr = 0;
-int num_inst = 0;
+int num_inst = 25;
+int seed = 0;
 
 // forward declarations
 int build_instructions();
-funct_t start_test;
 int executeit();
 
+// simple RNG
 int rand_range(int min, int max)
 {
   return rand() % (max - min + 1) + min;
@@ -43,9 +53,31 @@ int rand_range(int min, int max)
 
 int main(int argc, char *argv[])
 {
+  int opt;
   int ibuilt = 0, rc = 0;
   
-  srand(time(0));
+  // parse command line
+  while ((opt = getopt(argc, argv, "hs:n:")) != -1)
+  {
+    switch (opt)
+    {
+      case 's':
+        seed = strtol(optarg, NULL, 0);  		// auto-detect radix
+        break;
+        
+      case 'n':
+        num_inst = strtol(optarg, NULL, 0);		// auto-detect radix
+        break;
+      
+      case 'h':
+      default:
+        fprintf(stderr, "usage: encodeit [-h] [-s seed] [-n insts]\n");
+        exit(1);
+    }
+  }
+  
+  fprintf(stderr, "seed = %d, num insts = %d\n", seed, num_inst);
+  srand(seed);
   
   // allocate buffer to perform stores and loads to, and set permissions 
   mdptr = (volatile char *)mmap(
@@ -78,14 +110,14 @@ int main(int argc, char *argv[])
   }
   fprintf(stderr,"mptr is 0x%lx\n", (long) mptr);
   
-  next_ptr = mptr;                  // init next_ptr
-  ibuilt = build_instructions();    // build instructions
+  next_ptr = mptr;                  		// init next_ptr
+  ibuilt = build_instructions(num_inst);    // build instructions
 
   // ok now that I built the critters, time to execute them
   start_test = (funct_t)mptr;
   executeit(start_test);
 
-  fprintf(stderr, "generation program complete, %d instructions generated, and executed\n", ibuilt);
+  fprintf(stderr, "generation program complete, %d instructions generated and executed\n", ibuilt);
 
   // clean up the allocation before getting out
   munmap((caddr_t)mdptr, (MAX_DATA_BYTE + PAGESIZE-1));
@@ -154,33 +186,34 @@ static inline volatile char *add_endi(volatile char *tgt_addr)
  * Function: build_instructions
  *
  * Description:
- *    builds pop register
+ *    builds n randomly selected mov instrucitons
  *
  * Inputs: 
- *    int reg_index         :  index of register     // TO DO
+ *    int num_to_build      :  number of instructions to build
  *
  * Output: 
  *    int                   :   number of instructions generated
  */
-int build_instructions() 
+int build_instructions(int num_to_build) 
 {
-  // TO DO: why the strange byte limit?
+  int num_built = 0;
+  // TO DO: why the strange byte limit? this is a safe guardband for now
   long limit = (long)mptr + MAX_INSTR_BYTES;
   
-  // function preamble 
-  // TO DO: account for header inst count?
+  // add function preamble 
   next_ptr = add_headeri(next_ptr);
   
   // mov mdptr into rdi
   next_ptr = build_imm_to_register(ISZ_8, (long)mdptr, REG_EDI, next_ptr);
   
   // generate n random instructions
-  for (int i = 0; i < 4000; i++)
+  for (int i = 0; i < num_to_build; i++)
   {
     short size; 
     int src, dest, type;
     long imm;
-     
+    
+	// TO DO: should be next_ptr + ~10 to account for inst size. handled by guardband for now
     if ((long)next_ptr >= limit)
     {
       fprintf(stderr,"build instructions: instruction buffer full\n");
@@ -190,27 +223,26 @@ int build_instructions()
     // operand size 1/2/4/8
     size = 1 << rand_range(0, 3);
     
-    // src reg
+    // src reg, any
     src = rand_range(REG_EAX, REG_EDI);
     
     // dest reg, excluding sp and rdi
     while ((dest = rand_range(REG_EAX, REG_ESI)) == REG_ESP);
     
-    type = rand_range(REG2REG, REG2MEM);
+    type = rand_range(REG2REG, MEM2REG);
     switch (type)
     {
       case REG2REG:
         next_ptr = build_mov_register_to_register(size, src, dest, next_ptr);
-        fprintf(stderr,"reg2reg: sz %d, src %d, dest %d\n", size, src, dest);
         break;
         
       case IMM2REG:
         imm = rand();
         if (size == 8) imm = (imm << 32) | rand();
         next_ptr = build_imm_to_register(size, imm, dest, next_ptr);
-        fprintf(stderr,"imm2reg: sz %d, imm %ld, dest %d\n", size, imm, dest);
         break;
         
+      case MEM2REG:  
       case REG2MEM:
         int disp, disp_type;
 
@@ -222,11 +254,14 @@ int build_instructions()
             break;
             
           case 1:
+			// sign extends -> negative falls outside mdptr. only positive for now
             disp_type = DISP8_MODRM;
-            disp = rand_range(0, 127);  // negative offset falls outside mdptr
+            disp = rand_range(0, 127);		
             break;
             
           case 2:
+			// TO DO: relies on mmap being MAX_DATA_BYTE + PAGESIZE-1
+			// should be adjusted to a better range
             disp_type = DISP32_MODRM;
             disp = rand_range(0, MAX_DATA_BYTE);
             break;
@@ -235,21 +270,30 @@ int build_instructions()
             fprintf(stderr,"illegal displacement type\n");
         }
         
-        next_ptr = build_reg_to_memory(size, src, REG_EDI, disp_type, disp, next_ptr);
-        fprintf(stderr,"reg2mem: sz %d, src %d, type %d, disp %x\n", size, src, disp_type, disp);
-        break;
+        if (type == REG2MEM)
+        {
+		  // use (EDI) as explicit dest for stores
+          next_ptr = build_reg_to_memory(size, src, REG_EDI, disp_type, disp, next_ptr);
+        }
+        else
+        {
+		  // use (EDI) as explicit src for loads
+          next_ptr = build_mov_memory_to_register(size, REG_EDI, dest, disp_type, disp, next_ptr);
+        }
         
+        break;
+      
       default:
         fprintf(stderr,"illegal instruction type\n");
     }
     
-    num_inst++;
+    num_built++;
   }
 
   // function postamble
   next_ptr = add_endi(next_ptr);
 
-  fprintf(stderr,"next ptr is now 0x%lx\n", (long) next_ptr);
+  fprintf(stderr,"built %d instructions, next ptr is now 0x%lx\n", num_built, (long) next_ptr);
 
-  return (num_inst);
+  return (num_built);
 }
