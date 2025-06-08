@@ -178,7 +178,7 @@ int main(int argc, char *argv[])
 			/* ok now that I built the critters, time to execute them */
 			start_test = (funct_t) mptr_threads[i];
 			executeit(start_test);
-			fprintf(stderr,"T%d generation program complete, instructions generated: %d\n",i, ibuilt);
+			fprintf(stderr,"T%d generation program complete, instructions executed: %d\n",i, ibuilt);
 
 			break;	
 		}
@@ -291,14 +291,15 @@ int build_instructions(volatile char *next_ptr, int thread_id, int num_to_build)
   
   // mov mdptr into rdi
   next_ptr = build_imm_to_register(ISZ_8, (long)mdptr_threads[thread_id], REG_EDI, next_ptr);
-  
+
   // generate n random instructions
   for (int i = 0; i < num_to_build; i++)
-  {
+	{
     short size; 
-    int src, dest, type;
+    int src, safe_src, dest, type;
     long imm;
-     
+    int disp, disp_type; 
+
     if ((long)next_ptr >= limit)
     {
       fprintf(stderr,"build instructions: instruction buffer full\n");
@@ -307,35 +308,11 @@ int build_instructions(volatile char *next_ptr, int thread_id, int num_to_build)
     
     // operand size 1/2/4/8
     size = 1 << rand_range(0, 3);
-    
-    // src reg
-    src = rand_range(REG_EAX, REG_EDI);
-    
-    // dest reg, excluding sp and rdi
-    while ((dest = rand_range(REG_EAX, REG_ESI)) == REG_ESP);
-    
-    type = rand_range(REG2REG, MEM2REG);
-    switch (type)
-    {
-      case REG2REG:
-        next_ptr = build_mov_register_to_register(size, src, dest, next_ptr);
-        //fprintf(stderr,"reg2reg: sz %d, src %d, dest %d\n", size, src, dest);
-        break;
-        
-      case IMM2REG:
-        imm = rand();
-        if (size == 8) imm = (imm << 32) | rand();
-        next_ptr = build_imm_to_register(size, imm, dest, next_ptr);
-        //fprintf(stderr,"imm2reg: sz %d, imm %ld, dest %d\n", size, imm, dest);
-        break;
-        
-      case MEM2REG:  
-      case REG2MEM:
-        int disp, disp_type;
 
-        switch (rand_range(0, 2))
-        {
-          case 0:
+    // generate 0/8/32 displacements
+    switch (rand_range(0, 2))
+    {
+        case 0:
             disp_type = DISP0_MODRM;
             disp = 0xdeadbeef;
             break;
@@ -352,27 +329,73 @@ int build_instructions(volatile char *next_ptr, int thread_id, int num_to_build)
           
           default:
             fprintf(stderr,"illegal displacement type\n");
-        }
+    }
+    
+    // src reg
+    src = rand_range(REG_EAX, REG_EDI);
+
+    // src reg for xchg/xadd - excluding sp and rdi
+    while ((safe_src = rand_range(REG_EAX, REG_ESI)) == REG_ESP);
+    
+    // dest reg, excluding sp and rdi
+    while ((dest = rand_range(REG_EAX, REG_ESI)) == REG_ESP);
+    
+    type = rand_range(REG2REG, SFENCE);
+    switch (type)
+    {
+    	case REG2REG:
+        	next_ptr = build_mov_register_to_register(size, src, dest, next_ptr);
+        	//fprintf(stderr,"reg2reg: sz %d, src %d, dest %d\n", size, src, dest);
+        	break;
         
-        if (type == REG2MEM)
-        {
-          next_ptr = build_reg_to_memory(size, src, REG_EDI, disp_type, disp, next_ptr);
-          //fprintf(stderr,"reg2mem: sz %d, src %d, type %d, disp %x\n", size, src, disp_type, disp);
-        }
-        else
-        {
-          next_ptr = build_mov_memory_to_register(size, REG_EDI, dest, disp_type, disp, next_ptr);
-          //fprintf(stderr,"mem2reg: sz %d, dest %d, type %d, disp %x\n", size, dest, disp_type, disp);
-        }
+      	case IMM2REG:
+        	imm = rand();
+        	if (size == 8) imm = (imm << 32) | rand();
+        	next_ptr = build_imm_to_register(size, imm, dest, next_ptr);
+        	//fprintf(stderr, "imm2reg: sz %d, imm %ld, dest %d\n", size, imm, dest);
+        	break;
         
-        break;
-      
-      default:
-        fprintf(stderr,"illegal instruction type\n");
+      	case MEM2REG:
+      		next_ptr = build_mov_memory_to_register(size, REG_EDI, dest, disp_type, disp, next_ptr);
+      		//fprintf(stderr, "mem2reg: sz %d, dest %d, type %d, disp %x\n", size, dest, disp_type, disp);
+      		break;
+
+      	case REG2MEM:
+        	next_ptr = build_reg_to_memory(size, src, REG_EDI, disp_type, disp, next_ptr);
+        	//fprintf(stderr, "reg2mem: sz %d, src %d, type %d, disp %x\n", size, src, disp_type, disp);
+        	break;
+
+    	case XADD:
+    	case XCHG:
+    		// generate with optional lock
+    		short lock = rand_range(0, 1);
+			if (type == XADD)
+				next_ptr = build_xadd(size, safe_src, REG_EDI, disp_type, disp, lock, next_ptr);
+			else
+				next_ptr = build_xchg(size, safe_src, REG_EDI, disp_type, disp, lock, next_ptr);
+			
+			//fprintf(stderr, "%s: sz %d, src %d, type %d, disp %x, lock %d\n", 
+			//	   (type == XADD) ? "xadd" : "xchg", size, safe_src, disp_type, disp, lock);
+			break;
+
+		case MFENCE:
+			next_ptr = build_mfence(next_ptr);
+			break;
+
+		case LFENCE:
+			next_ptr = build_lfence(next_ptr);
+			break;
+
+		case SFENCE:
+			next_ptr = build_sfence(next_ptr);
+			break;
+ 
+    	default:
+        	fprintf(stderr, "illegal instruction type\n");
     }
     
     num_built++;
-  }
+	}
 
   // function postamble
   next_ptr = add_endi(next_ptr);
