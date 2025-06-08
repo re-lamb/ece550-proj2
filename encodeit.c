@@ -1,129 +1,216 @@
 /*
- * ECE550 Spring 2025 Project part 2
+ * ECE550 Spring 2025 Project part 3
  * R.E. Lamb, Harsha Duvvuru
  *
- * usage: encodeit [-h] [-s seed] [-n insts]
+ * usage: encodeit [-h] [-s seed] [-n insts] [-t threads] [-l logfile]
  *
  * args:
  *      -h          print usage message
  *      -s seed     set random seed
  *      -n insts    set number to generate
+ *		-t threads 	set number of threads
+ *		-l logfile	set logfile name
  *
  */
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/mman.h>
-#include <time.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <limits.h> 
 
 #include "ia32_encode.h"
 
-#ifndef PAGESIZE
-#define PAGESIZE 4096
-#endif
-
-#ifndef MAP_ANONYMOUS
-#define MAP_ANONYMOUS MAP_ANON
-#endif
-
-#define REG2REG   0x0
-#define IMM2REG   0x1
-#define REG2MEM   0x2
-#define MEM2REG   0x3
-
-// typedefs
 typedef int (*funct_t)();
+typedef struct { volatile char *pointer_addr; } test_i;
+typedef volatile char *tptrs;
 
-// globals
-funct_t start_test;
-volatile char *mptr = 0, *next_ptr = 0, *mdptr = 0;
+// globals to aid debug to start
+volatile char *mptr = 0,*next_ptr = 0,*mdptr = 0, *comm_ptr = 0;
 int num_inst = 25;
-int seed = 0;
+int nthreads = 1;
 
-// forward declarations
-int build_instructions();
+int target_ninstrs = MAX_DEF_INSTRS;
+int pid_task[MAX_THREADS];
+
+test_i test_info[NUM_PTRS];
+volatile char *mptr_threads[MAX_THREADS];
+volatile char *mdptr_threads[MAX_THREADS];
+volatile char *comm_ptr_threads[MAX_THREADS];
+
+funct_t start_test;
+
+int build_instructions(volatile char*, int, int);
 int executeit();
 
-// simple RNG
-int rand_range(int min, int max)
+int rand_range(int min_n, int max_n)
 {
-  return rand() % (max - min + 1) + min;
+	return rand() % (max_n - min_n + 1) + min_n;
 }
 
 int main(int argc, char *argv[])
 {
-  int opt;
-  int ibuilt = 0, rc = 0;
+	int opt, i, pid;
+	int seed = 0;
+  	int ibuilt = 0;
+  	int rc = 0;
+  	char* logfile = NULL;
   
-  // parse command line
-  while ((opt = getopt(argc, argv, "hs:n:")) != -1)
-  {
-    switch (opt)
-    {
-      case 's':
-        seed = strtol(optarg, NULL, 0);  		// auto-detect radix
-        break;
+  	// parse command line
+  	while ((opt = getopt(argc, argv, "hs:n:t:l:")) != -1)
+  	{
+    	switch (opt)
+    	{
+      	case 's':
+        	seed = strtol(optarg, NULL, 0);
+        	break;
         
-      case 'n':
-        num_inst = strtol(optarg, NULL, 0);		// auto-detect radix
-        break;
+      	case 'n':
+        	num_inst = strtol(optarg, NULL, 0); 
+        	break;
+
+        case 't':
+        	nthreads = strtol(optarg, NULL, 0);  
+        	break;
       
-      case 'h':
-      default:
-        fprintf(stderr, "usage: encodeit [-h] [-s seed] [-n insts]\n");
-        exit(1);
-    }
-  }
-  
-  fprintf(stderr, "seed = %d, num insts = %d\n", seed, num_inst);
-  srand(seed);
-  
-  // allocate buffer to perform stores and loads to, and set permissions 
-  mdptr = (volatile char *)mmap(
-    (void *) 0,
-    (MAX_DATA_BYTE + PAGESIZE-1),
-    PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED,
-    0, 0
-  );
+      	case 'l':
+      		logfile = optarg;
+      		break;
 
-  if (mdptr == MAP_FAILED) 
-  { 
-    printf("data mptr allocation failed\n"); 
-    exit(1); 
-  }
-  fprintf(stderr,"mdptr is 0x%lx\n", (long) mdptr);
+      	case 'h':
+      	default:
+        	fprintf(stderr, "usage: encodeit [-h] [-s seed] [-n insts] [-t threads] [-l logfile]\n");
+        	exit(1);
+    	}
+  	}
 
-  // allocate buffer to build instructions into, and set permissions to allow execution of this memory area 
-  mptr = (volatile char *)mmap(
-    (void *) 0,
-    (MAX_INSTR_BYTES + PAGESIZE-1),
-    PROT_READ | PROT_WRITE | PROT_EXEC,
-    MAP_ANONYMOUS | MAP_SHARED,
-    0, 0
-  );
+	fprintf(stderr, "seed = %d, num insts = %d, num threads = %d\n", seed, num_inst, nthreads);
+	if (logfile) fprintf(stderr, "logfile = \"%s\"\n", logfile); 
 
-  if (mptr == MAP_FAILED) 
-  { 
-    printf("instr  mptr allocation failed\n"); 
-    exit(1); 
-  }
-  fprintf(stderr,"mptr is 0x%lx\n", (long) mptr);
-  
-  next_ptr = mptr;                  		// init next_ptr
-  ibuilt = build_instructions(num_inst);    // build instructions
+	if (nthreads > MAX_THREADS) 
+	{
+		fprintf(stderr,"Sorry only built for %d threads overriding your %d\n", MAX_THREADS, nthreads);
+		fflush(stderr);
+		nthreads = MAX_THREADS;
+	}
 
-  // ok now that I built the critters, time to execute them
-  start_test = (funct_t)mptr;
-  executeit(start_test);
+	srand(seed);
 
-  fprintf(stderr, "generation program complete, %d instructions generated and executed\n", ibuilt);
+	/* allocate buffer to perform stores and loads to  */
+	test_info[DATA].pointer_addr = mmap(
+		(void *) 0,
+		(MAX_DATA_BYTES + PAGESIZE-1) * nthreads,
+		PROT_READ | PROT_WRITE | PROT_EXEC, MAP_ANONYMOUS | MAP_SHARED,
+		0, 0
+		);
 
-  // clean up the allocation before getting out
-  munmap((caddr_t)mdptr, (MAX_DATA_BYTE + PAGESIZE-1));
-  munmap((caddr_t)mptr, (MAX_INSTR_BYTES + PAGESIZE-1));
-  
-  return(0);
+	/* save the base address for debug like before */
+	mdptr = test_info[DATA].pointer_addr;
+
+	if (((int *)test_info[DATA].pointer_addr) == (int *)-1) 
+	{
+		perror("Couldn't mmap (MAX_DATA_BYTES)");
+		exit(1);
+	}
+
+	/* allocate buffer to build instructions into */
+	test_info[CODE].pointer_addr = mmap(
+		(void *) 0,
+		(MAX_INSTR_BYTES + PAGESIZE-1) * nthreads,
+		PROT_READ | PROT_WRITE | PROT_EXEC,
+		MAP_ANONYMOUS | MAP_SHARED,
+		0, 0
+		);
+
+	/* keep a copy to the base here */
+	mptr = test_info[CODE].pointer_addr;
+
+	if (((int *)test_info[CODE].pointer_addr) == (int *)-1) 
+	{
+		perror("Couldn't mmap (MAX_INSTR_BYTES)");
+		exit(1);
+	}
+
+	/* allocate buffer to build communications area into */
+	test_info[COMM].pointer_addr = mmap(
+		(void *) 0,
+		(MAX_COMM_BYTES + PAGESIZE-1) * nthreads,
+		PROT_READ | PROT_WRITE | PROT_EXEC,
+		MAP_ANONYMOUS | MAP_SHARED,
+		0, 0
+		);
+
+	comm_ptr = test_info[COMM].pointer_addr;
+
+	if (((int *)test_info[COMM].pointer_addr) == (int *)-1) 
+	{
+		perror("Couldn't mmap (MAX_COMM_BYTES)");
+		exit(1);
+	}
+
+	/* make the standard output and stderrr unbuffered */
+	setbuf(stdout, (char *) NULL);
+	setbuf(stderr, (char *) NULL);
+
+	/* start appropriate # of threads */
+	for (i = 0; i < nthreads; i++) 
+	{
+		next_ptr = (mptr + (i * MAX_INSTR_BYTES));         			// init next_ptr
+		fprintf(stderr, "T%d next_ptr = 0x%lx\n", i, (unsigned long)next_ptr);
+		mdptr_threads[i] = (tptrs)(mdptr + (i * MAX_DATA_BYTES)); 	// init threads data pointer
+		mptr_threads[i] = (tptrs)next_ptr;                     		// save ptr per thread
+		comm_ptr_threads[i] = (tptrs)comm_ptr;                 		// everyone gets the same for now
+
+		/* use fork to start a new child process */
+		if ((pid = fork()) == 0) 
+		{
+			fprintf(stderr,"T%d started\n", i);
+
+			//
+			// NOTE:  you could set your sched_setaffinity here...better to make a subroutine to bind
+			// 
+			//
+			ibuilt = build_instructions(mptr_threads[i], i, num_inst);  
+
+			/* ok now that I built the critters, time to execute them */
+			start_test = (funct_t) mptr_threads[i];
+			executeit(start_test);
+			fprintf(stderr,"T%d generation program complete, instructions generated: %d\n",i, ibuilt);
+
+			break;	
+		}
+        else if (pid_task[i] == -1) 
+        {
+			perror("fork me failed");
+			exit(1);
+		} 
+		else 
+		{ 
+			// this should be the parent 
+			pid_task[i] = pid; // save pid
+
+			fprintf(stderr,"T%d PID = %d\n", i, pid);
+		}
+	     
+	} // end for nthreads
+
+
+	// wait for threads to complete
+
+	for (i = 0; i < nthreads; i++) 
+	{
+		waitpid(pid_task[i], NULL, 0);
+	}
+
+	// clean up the allocation before getting out
+	munmap((caddr_t)mdptr,(MAX_DATA_BYTES + PAGESIZE-1)*nthreads);
+	munmap((caddr_t)mptr,(MAX_INSTR_BYTES + PAGESIZE-1)*nthreads);
+	munmap((caddr_t)comm_ptr,(MAX_COMM_BYTES + PAGESIZE-1)*nthreads);
+
+	return 0;
 }
 
 /*
@@ -141,11 +228,9 @@ int main(int argc, char *argv[])
  */
 int executeit(funct_t start_addr) 
 {
-  volatile int i, rc = 0;
-  i = 0;
+  volatile int rc = 0;
 
   rc = (*start_addr)();
-
   return(0);
 }
 
@@ -186,25 +271,26 @@ static inline volatile char *add_endi(volatile char *tgt_addr)
  * Function: build_instructions
  *
  * Description:
- *    builds n randomly selected mov instrucitons
+ *    builds pop register
  *
  * Inputs: 
- *    int num_to_build      :  number of instructions to build
+ *    int reg_index         :  index of register     // TO DO
  *
  * Output: 
  *    int                   :   number of instructions generated
  */
-int build_instructions(int num_to_build) 
+int build_instructions(volatile char *next_ptr, int thread_id, int num_to_build) 
 {
   int num_built = 0;
-  // TO DO: why the strange byte limit? this is a safe guardband for now
-  long limit = (long)mptr + MAX_INSTR_BYTES;
+  long limit = (long)mptr_threads[thread_id] + MAX_INSTR_BYTES - SAFETY_MARGIN;
   
-  // add function preamble 
+  fprintf(stderr,"T%d building instructions\n", thread_id);
+
+  // function preamble 
   next_ptr = add_headeri(next_ptr);
   
   // mov mdptr into rdi
-  next_ptr = build_imm_to_register(ISZ_8, (long)mdptr, REG_EDI, next_ptr);
+  next_ptr = build_imm_to_register(ISZ_8, (long)mdptr_threads[thread_id], REG_EDI, next_ptr);
   
   // generate n random instructions
   for (int i = 0; i < num_to_build; i++)
@@ -212,8 +298,7 @@ int build_instructions(int num_to_build)
     short size; 
     int src, dest, type;
     long imm;
-    
-	// TO DO: should be next_ptr + ~10 to account for inst size. handled by guardband for now
+     
     if ((long)next_ptr >= limit)
     {
       fprintf(stderr,"build instructions: instruction buffer full\n");
@@ -223,7 +308,7 @@ int build_instructions(int num_to_build)
     // operand size 1/2/4/8
     size = 1 << rand_range(0, 3);
     
-    // src reg, any
+    // src reg
     src = rand_range(REG_EAX, REG_EDI);
     
     // dest reg, excluding sp and rdi
@@ -234,12 +319,14 @@ int build_instructions(int num_to_build)
     {
       case REG2REG:
         next_ptr = build_mov_register_to_register(size, src, dest, next_ptr);
+        //fprintf(stderr,"reg2reg: sz %d, src %d, dest %d\n", size, src, dest);
         break;
         
       case IMM2REG:
         imm = rand();
         if (size == 8) imm = (imm << 32) | rand();
         next_ptr = build_imm_to_register(size, imm, dest, next_ptr);
+        //fprintf(stderr,"imm2reg: sz %d, imm %ld, dest %d\n", size, imm, dest);
         break;
         
       case MEM2REG:  
@@ -254,16 +341,13 @@ int build_instructions(int num_to_build)
             break;
             
           case 1:
-			// sign extends -> negative falls outside mdptr. only positive for now
             disp_type = DISP8_MODRM;
-            disp = rand_range(0, 127);		
+            disp = rand_range(0, 127);  				// negative offset falls outside mdptr
             break;
             
           case 2:
-			// TO DO: relies on mmap being MAX_DATA_BYTE + PAGESIZE-1
-			// should be adjusted to a better range
             disp_type = DISP32_MODRM;
-            disp = rand_range(0, MAX_DATA_BYTE);
+            disp = rand_range(0, MAX_DATA_BYTES - 8);	// don't store outside buffer!
             break;
           
           default:
@@ -272,13 +356,13 @@ int build_instructions(int num_to_build)
         
         if (type == REG2MEM)
         {
-		  // use (EDI) as explicit dest for stores
           next_ptr = build_reg_to_memory(size, src, REG_EDI, disp_type, disp, next_ptr);
+          //fprintf(stderr,"reg2mem: sz %d, src %d, type %d, disp %x\n", size, src, disp_type, disp);
         }
         else
         {
-		  // use (EDI) as explicit src for loads
           next_ptr = build_mov_memory_to_register(size, REG_EDI, dest, disp_type, disp, next_ptr);
+          //fprintf(stderr,"mem2reg: sz %d, dest %d, type %d, disp %x\n", size, dest, disp_type, disp);
         }
         
         break;
