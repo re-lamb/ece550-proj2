@@ -1,125 +1,99 @@
-# Base code for project_part2 plus instructions
+# Base code for project part3 plus instructions
 #
 #
 # Summary
-# Practice debugging a failure to start... current version fails, why?
 #
-# In this project you will be adding more instructions
-# This project you will actually execute and debug your code you are executing!
-# At the end of this project you should be able to generate, single step through 
-# and execute your code from start to finish..
+# Adding multiple procs into your test environment
+#
+#
+# In this part you will be adding more instructions as well as fork processes
+# to allowing running multiple generators in parallel
+#
+# This part is an extension to part 2
+#
+# At the end of this lab you should be able to generate, single step through 
+# and execute your code from start to finish but with multiple processes that can be run on multiple threads/cores..
+#
+# As before (should have argument to pass in seed # and # of instructions)
+#
 # Should also be able to run just by letting it run from the command line...
-# Get generate and execute 25 instruction (mixture of reg to reg , imm to reg,
+# Get generate and execute 25 instructions (mixture of reg to reg , imm to reg,
 # reg to memory, and memory to reg), then return to the executeit routine..
 # Set a base address in one or more registers and use that register(s) as a pointer
-# to memory.
+# to memory on a per process basis.
 #
-# Start off debugging where it is failing and note why?
 # 
-# use gdb to run and debug the problem..
-# NOTE:  hint, use bt command for backtracing where it faults, examine the instruction
-# it fails on... do you understand why?
-# Please document your debug steps and findings
+# use gdb to run and debug problems..
 #
-# you will shortly fix this problem with your new additions..
 #
 #
 # Requirements
 #
-# Merge in your code from project_part1
+# Merge in your code from part2
 #
 # add the following new instruction build routines
-#     push register and pop register routine (build_push_reg, build_pop_reg)
-#     pusha (only valid for x86 case)
-#     enter instruction with encode using the imm, 0 form, imm should be 2048
-#     leave instruction (no parameters)
-#     ret   (no parameters)
-#     
-#    add build_mov_memory_to_register and include a displacement of 0, 8, and 32 bits
 #
-#    add a displacement to your previous mov reg to memory if you don't have one already
-#    (support 0, 8 and 32 bit displacement)
-#     static inline volatile char *build_mov_register_to_memory(short mov_size, int src_reg, int dest_reg,long displacement,  volatile char *tgt_addr)
+#     build_xadd (of the following forms) r/m{8,16,32}, {r8, r16, r32}  (Intel syntax)
+#     		 for the above, randomize with/without a lock prefix
+#     build_xchg (of the following forms) r/m{8,16,32}, {r8, r16, r32}  (Intel syntax)
+#     		 for the above, randomize with/without a lock prefix
+#
+#     build_mfence (add instruction for mfence)
+#     build_sfence (add instruction for sfence)
+#     build_lfence (add instruction for lfence)
 #
 #     
+# Add New parameters
 # 
-# add the following new C routines to encodeit.c
+# nthreads:    Add a parameter to your code to pass in the number of threads to generate and execute.
+# 
+# logfilename: Add a parameter to dump out a log file on instruction type, reg, memory, displacement, 
+# 
+# 
+# Changes to the Base code
 #
-# static inline volatile char *add_headeri(volatile char *tgt_addr)
-# static inline volatile char *add_endi(volatile char *tgt_addr)
+# The current code creates a separate data area for each processes, but for MP validation, we will want to share
+# the data area between processes.  
 # 
+#
+# Add code to bind the process to particular CPU
 # 
+# best to have a subroutine to do this, i.e. bind_to_cpu(<can pass in thread logical id>)
+#
+# Can use the following function call, do a man/search on sched_setaffinity
+# 
+#
+# NAME
+#       sched_setaffinity, sched_getaffinity - set and get a process's CPU affinity mask
+#
+#
+# #include <sched.h>
+#
+# // to set use, note parameters
+#
+# int sched_setaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
+#
+# // to get current affinity if needed
+#
+# int sched_getaffinity(pid_t pid, size_t cpusetsize,
+#  cpu_set_t *mask);
+#
+#
+#
+# Extra Credit
+# =========================
 # in add_headeri function
-#    make call to create "enter $2048, 0" to create a stack frame
+#    
+# add synchronization barrier code to synchronize the threads prior to random code based on # of generator threads
 #
 # in add_endi function
-#    make call to create "leave" instruction to release stack frame setup by enter
-#    make call to create "ret" instruction this will get you back to the calleer
-# 
 #
-# for these do the following:
-# 
-# call add_headeri from build_instructions first thing.. this adds a header to your code
-#      ...
-#      generate instructions
-#      ...
-# call add_endi as the last function in your build_instructions routine adds finish up 
-#      code to allow you to return to the calling routine
-# 
-#
-# in encodeit.c you will want to  malloc call with a 
-# 
-# note the push and pop register routines are added 
-# 
-# HINTS: for next project, to avoid getting into trouble.
-#
-# since we haven't discussed the x86_64, 64bit REx prefix, I'm providing 
-# some hints on this front to make it easier..AS WELL as some code...
-# included a wimpy push and pop routine that can also handle new 64 bit registers
-#
-# 
-# if you have a 64 bit (x86_64) enabled platform running linux, 
-# then you will need to do the following for
-# passing the right address from immmediate to reg routine..
-#
-# to pre-fix for 64 bit immediate move instruction, 
-# (this only handles 8 byte moves by the way...) see the following code...
-#
-# // this will give you an idea of how to handle the 64 bit move immediate case
-# // this will need to prefix your opcode
-# //
-# 	if (mov_size == 8) {
-#		// this is a quick hack for REX_W prefix
-#		// need to go back and fix this for general case.
-#
-#		(*(char *) tgt_addr)=(REX_PREFIX | REX_W);
-#		tgt_addr += BYTE1_OFF;
-#	}
+# add barrier code to synchronize the threads and the end of the random code (can be used for checking, etc)
 #
 #
-# then also need to the immediate to reg would look something like this..
+# HINTS: use a shared com ptr area for this.
 #
-#
-#	case 8:  // this requires rex.w to be set prior to this..
-#		 (*(char *) tgt_addr) = (0xb8 + dest_reg);
-#		 tgt_addr += BYTE1_OFF;
-#		 (*(long *)tgt_addr) = imm;
-#		 tgt_addr +=8;
-#		 break;
-#
-# 
-#  Hint 2:
-#         what about architecture callee saved registers........
-#         hmm, should be saving and restoring register before we start execution our own#         code?  Ever hear of ABI (Application Binary Interface)... Also good practice to
-#         make sure you don't destroy any needed context for the return path...
-#
-#  Hint 3:  
-#         What address do we use do for loads and stores, and how do establish the data
-#         pointer register from the code you built?  Use the pointer to mdptr in which 
-#         call?
-#
-#         
-#  
+
 #
 # Building the code...
 # In order to build the code, same as before
@@ -170,3 +144,4 @@ Breakpoint 3, main (argc=1, argv=0x7fff5fbff920) at encodeit.c:27
 # both from the debugger and from just letting it run from the command line...
 # 
 #
+
