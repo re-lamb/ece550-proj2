@@ -589,24 +589,27 @@ static inline volatile char *build_return(volatile char *tgt_addr)
 
 static inline volatile char *build_mfence(volatile char *tgt_addr)
 {
-    (*(int *)tgt_addr) = 0xf0ae0f;  // this is not safe
-    tgt_addr += BYTE3_OFF;
+    *tgt_addr++ = 0x0F;
+    *tgt_addr++ = 0xAE;
+    *tgt_addr++ = 0xF0;
     
     return(tgt_addr);
 }
 
 static inline volatile char *build_lfence(volatile char *tgt_addr)
 {
-    (*(int *)tgt_addr) = 0xe8ae0f;  // this is not safe
-    tgt_addr += BYTE3_OFF;
+    *tgt_addr++ = 0x0F; 
+    *tgt_addr++ = 0xAE;
+    *tgt_addr++ = 0xE8;
     
     return(tgt_addr);
 }
 
 static inline volatile char *build_sfence(volatile char *tgt_addr)
 {
-    (*(int *)tgt_addr) = 0xf8ae0f;  // this is not safe
-    tgt_addr += BYTE3_OFF;
+    *tgt_addr++ = 0x0F;
+    *tgt_addr++ = 0xAE;
+    *tgt_addr++ = 0xf8;
     
     return(tgt_addr);
 }
