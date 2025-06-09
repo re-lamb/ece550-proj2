@@ -335,7 +335,6 @@ static inline volatile char *build_mov_memory_to_register(short mov_size, int sr
   return(tgt_addr);
 }
 
-static inline volatile char *build_xadd(short size, int src_reg, int dest_reg, unsigned char disp_type, int disp, short lock, volatile char *tgt_addr)
 /*
  * Function: build_xadd
  *
@@ -354,6 +353,7 @@ static inline volatile char *build_xadd(short size, int src_reg, int dest_reg, u
  * Output: 
  *    returns adjusted address after encoding instruction
  */
+static inline volatile char *build_xadd(short size, int src_reg, int dest_reg, unsigned char disp_type, int disp, short lock, volatile char *tgt_addr)
 {
   if (lock)
   {
@@ -418,7 +418,6 @@ static inline volatile char *build_xadd(short size, int src_reg, int dest_reg, u
     return(tgt_addr);
 }
 
-static inline volatile char *build_xchg(short size, int src_reg, int dest_reg, unsigned char disp_type, int disp, short lock, volatile char *tgt_addr)
 /*
  * Function: build_xchg
  *
@@ -437,6 +436,7 @@ static inline volatile char *build_xchg(short size, int src_reg, int dest_reg, u
  * Output: 
  *    returns adjusted address after encoding instruction
  */
+static inline volatile char *build_xchg(short size, int src_reg, int dest_reg, unsigned char disp_type, int disp, short lock, volatile char *tgt_addr)
 {
   if (lock)
   {
