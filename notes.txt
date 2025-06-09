@@ -1,0 +1,49 @@
+gdb notes --
+
+// single step
+si - one inst
+x/i $rip - disass inst @ pc
+
+// follow child process
+set follow-fork-mode child 
+set detach-on-fork off
+br executeit 
+
+br 217 	// barrier
+br 198	// before child exits
+br 224	// waitpid
+
+// show children running concurrently
+pstree -p PID
+ps -eLo pid,psr,comm | grep encodeit
+
+
+// debug a child
+gdb ./encodeit
+set detach-on-fork off
+br 198
+br 224
+run -tn -in -sn
+<<should break in parent after the barrier is released, BEFORE waitpid>>
+
+info inferiors
+inferior n
+<<switch to a child, which should be waiting in fork()!!>>
+
+finish 			(may need several tries to finish the fork() call
+				 and return to our code)
+s, si, etc 		(to step, dump mem and so on)
+
+-or-
+
+br executeit	(sets this breakpoint in all children)
+c
+
+-or-
+
+c will run to the brkpt @ 198 - generate and execute our code but stop before exit()
+so we can interrogate the child
+
+<<be sure to 'c' each child to completion / exit then switch back to the parent>>
+
+c to allow the parent to complete normally
